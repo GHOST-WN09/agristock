@@ -2,7 +2,6 @@ const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const Database = require('better-sqlite3');
-const db = new Database('./agristock.db');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 require('dotenv').config();
@@ -12,6 +11,16 @@ const PORT = process.env.PORT || 3000;
 const SECRET_KEY = process.env.SECRET_KEY || 'agristock_secret_key_2026_default_unsafe';
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
+
+// Connexion DB
+let db;
+try {
+  db = new Database('./agristock.db');
+  console.log('Connected to SQLite database.');
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
+}
 
 // Configuration CORS
 const corsOptions = NODE_ENV === 'production' ? {
@@ -30,26 +39,18 @@ if (NODE_ENV === 'development') {
   console.log('✅ Mode production');
 }
 
-// Connexion DB
-try {
-  console.log('Connected to SQLite database.');
-} catch (err) {
-  console.error(err.message);
-  process.exit(1);
-}
-
 // Création tables
-db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS users (
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT UNIQUE,
     password TEXT,
     name TEXT,
     initials TEXT,
     role TEXT DEFAULT 'staff'
-  )`);
+  );
 
-  db.run(`CREATE TABLE IF NOT EXISTS stocks (
+  CREATE TABLE IF NOT EXISTS stocks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
     nom TEXT,
@@ -58,9 +59,9 @@ db.serialize(() => {
     prix REAL,
     date_ajout TEXT,
     FOREIGN KEY(user_id) REFERENCES users(id)
-  )`);
+  );
 
-  db.run(`CREATE TABLE IF NOT EXISTS ventes (
+  CREATE TABLE IF NOT EXISTS ventes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
     client_id INTEGER,
@@ -70,18 +71,18 @@ db.serialize(() => {
     total REAL,
     date_vente TEXT,
     FOREIGN KEY(user_id) REFERENCES users(id)
-  )`);
+  );
 
-  db.run(`CREATE TABLE IF NOT EXISTS depenses (
+  CREATE TABLE IF NOT EXISTS depenses (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
     description TEXT,
     montant REAL,
     date_depense TEXT,
     FOREIGN KEY(user_id) REFERENCES users(id)
-  )`);
+  );
 
-  db.run(`CREATE TABLE IF NOT EXISTS clients (
+  CREATE TABLE IF NOT EXISTS clients (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
     nom TEXT,
@@ -89,20 +90,20 @@ db.serialize(() => {
     adresse TEXT,
     date_ajout TEXT,
     FOREIGN KEY(user_id) REFERENCES users(id)
-  )`);
+  );
+`);
 
-  // Utilisateurs par défaut
-  const defaultUsers = [
-    { username: 'demo', password: bcrypt.hashSync('agri2024', 10), name: 'Demo Agriculteur', initials: 'DA', role: 'manager' },
-    { username: 'boubacar', password: bcrypt.hashSync('boubs2026', 10), name: 'Boubacar Sow', initials: 'BS', role: 'manager' },
-    { username: 'aminata', password: bcrypt.hashSync('aminata136', 10), name: 'Aminata Diallo', initials: 'AD', role: 'staff' },
-    { username: 'oumou', password: bcrypt.hashSync('oumoudiallo100#', 10), name: 'Oumou Diallo', initials: 'OD', role: 'admin' }
-  ];
+// Utilisateurs par défaut
+const defaultUsers = [
+  { username: 'demo', password: bcrypt.hashSync('agri2024', 10), name: 'Demo Agriculteur', initials: 'DA', role: 'manager' },
+  { username: 'boubacar', password: bcrypt.hashSync('boubs2026', 10), name: 'Boubacar Sow', initials: 'BS', role: 'manager' },
+  { username: 'aminata', password: bcrypt.hashSync('aminata136', 10), name: 'Aminata Diallo', initials: 'AD', role: 'staff' },
+  { username: 'oumou', password: bcrypt.hashSync('oumoudiallo100#', 10), name: 'Oumou Diallo', initials: 'OD', role: 'admin' }
+];
 
-  defaultUsers.forEach(user => {
-    db.run(`INSERT OR IGNORE INTO users (username, password, name, initials, role) VALUES (?, ?, ?, ?, ?)`,
-      [user.username, user.password, user.name, user.initials, user.role]);
-  });
+const insertUser = db.prepare(`INSERT OR IGNORE INTO users (username, password, name, initials, role) VALUES (?, ?, ?, ?, ?)`);
+defaultUsers.forEach(user => {
+  insertUser.run(user.username, user.password, user.name, user.initials, user.role);
 });
 
 // Middleware auth
@@ -121,33 +122,32 @@ function authenticateToken(req, res, next) {
 app.post('/api/login', (req, res) => {
   const { username, password } = req.body;
   console.log(`[LOGIN] Tentative connexion : ${username}`);
-  db.get('SELECT * FROM users WHERE username = ?', [username], (err, user) => {
-    if (err) {
-      console.error(`[ERROR] DB error: ${err.message}`);
-      return res.status(500).json({ error: err.message });
-    }
+  try {
+    const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
     if (!user) {
       console.log(`[LOGIN] Utilisateur non trouvé: ${username}`);
       return res.status(401).json({ error: 'Identifiants invalides' });
     }
     const isPasswordValid = bcrypt.compareSync(password, user.password);
     console.log(`[LOGIN] Password check for ${username}: ${isPasswordValid}`);
-    if (!isPasswordValid) {
-      return res.status(401).json({ error: 'Identifiants invalides' });
-    }
+    if (!isPasswordValid) return res.status(401).json({ error: 'Identifiants invalides' });
     const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, SECRET_KEY);
     console.log(`[LOGIN] ✓ Connexion réussie: ${username}`);
     res.json({ token, user: { id: user.id, username: user.username, name: user.name, initials: user.initials, role: user.role } });
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Routes Users (admin only)
 app.get('/api/users', authenticateToken, (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Accès refusé' });
-  db.all('SELECT id, username, name, initials, role FROM users', [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+  try {
+    const rows = db.prepare('SELECT id, username, name, initials, role FROM users').all();
     res.json(rows);
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/users', authenticateToken, (req, res) => {
@@ -155,151 +155,178 @@ app.post('/api/users', authenticateToken, (req, res) => {
   const { username, password, name, role } = req.body;
   const hashedPassword = bcrypt.hashSync(password, 10);
   const initials = name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
-  db.run('INSERT INTO users (username, password, name, initials, role) VALUES (?, ?, ?, ?, ?)',
-    [username, hashedPassword, name, initials, role], function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ id: this.lastID });
-    });
+  try {
+    const result = db.prepare('INSERT INTO users (username, password, name, initials, role) VALUES (?, ?, ?, ?, ?)').run(username, hashedPassword, name, initials, role);
+    res.json({ id: result.lastInsertRowid });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.delete('/api/users/:id', authenticateToken, (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Accès refusé' });
-  db.run('DELETE FROM users WHERE id = ?', [req.params.id], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ deleted: this.changes });
-  });
+  try {
+    const result = db.prepare('DELETE FROM users WHERE id = ?').run(req.params.id);
+    res.json({ deleted: result.changes });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Routes Stocks
 app.get('/api/stocks', authenticateToken, (req, res) => {
-  db.all('SELECT * FROM stocks WHERE user_id = ?', [req.user.id], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+  try {
+    const rows = db.prepare('SELECT * FROM stocks WHERE user_id = ?').all(req.user.id);
     res.json(rows);
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/stocks', authenticateToken, (req, res) => {
   const { nom, quantite, unite, prix } = req.body;
-  db.run('INSERT INTO stocks (user_id, nom, quantite, unite, prix, date_ajout) VALUES (?, ?, ?, ?, ?, ?)',
-    [req.user.id, nom, quantite, unite, prix, new Date().toISOString()], function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ id: this.lastID });
-    });
+  try {
+    const result = db.prepare('INSERT INTO stocks (user_id, nom, quantite, unite, prix, date_ajout) VALUES (?, ?, ?, ?, ?, ?)').run(req.user.id, nom, quantite, unite, prix, new Date().toISOString());
+    res.json({ id: result.lastInsertRowid });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.put('/api/stocks/:id', authenticateToken, (req, res) => {
   const { nom, quantite, unite, prix } = req.body;
-  db.run('UPDATE stocks SET nom = ?, quantite = ?, unite = ?, prix = ? WHERE id = ? AND user_id = ?',
-    [nom, quantite, unite, prix, req.params.id, req.user.id], function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ updated: this.changes });
-    });
+  try {
+    const result = db.prepare('UPDATE stocks SET nom = ?, quantite = ?, unite = ?, prix = ? WHERE id = ? AND user_id = ?').run(nom, quantite, unite, prix, req.params.id, req.user.id);
+    res.json({ updated: result.changes });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.delete('/api/stocks/:id', authenticateToken, (req, res) => {
-  db.run('DELETE FROM stocks WHERE id = ? AND user_id = ?', [req.params.id, req.user.id], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ deleted: this.changes });
-  });
+  try {
+    const result = db.prepare('DELETE FROM stocks WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
+    res.json({ deleted: result.changes });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// Routes Ventes (similaire pour depenses, clients)
+// Routes Ventes
 app.get('/api/ventes', authenticateToken, (req, res) => {
-  db.all('SELECT * FROM ventes WHERE user_id = ?', [req.user.id], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+  try {
+    const rows = db.prepare('SELECT * FROM ventes WHERE user_id = ?').all(req.user.id);
     res.json(rows);
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/ventes', authenticateToken, (req, res) => {
   const { client_id, produit, quantite, prix_unitaire, total } = req.body;
-  db.run('INSERT INTO ventes (user_id, client_id, produit, quantite, prix_unitaire, total, date_vente) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [req.user.id, client_id, produit, quantite, prix_unitaire, total, new Date().toISOString()], function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ id: this.lastID });
-    });
+  try {
+    const result = db.prepare('INSERT INTO ventes (user_id, client_id, produit, quantite, prix_unitaire, total, date_vente) VALUES (?, ?, ?, ?, ?, ?, ?)').run(req.user.id, client_id, produit, quantite, prix_unitaire, total, new Date().toISOString());
+    res.json({ id: result.lastInsertRowid });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.put('/api/ventes/:id', authenticateToken, (req, res) => {
   const { produit, quantite, prix_unitaire, total } = req.body;
-  db.run('UPDATE ventes SET produit = ?, quantite = ?, prix_unitaire = ?, total = ? WHERE id = ? AND user_id = ?',
-    [produit, quantite, prix_unitaire, total, req.params.id, req.user.id], function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ updated: this.changes });
-    });
+  try {
+    const result = db.prepare('UPDATE ventes SET produit = ?, quantite = ?, prix_unitaire = ?, total = ? WHERE id = ? AND user_id = ?').run(produit, quantite, prix_unitaire, total, req.params.id, req.user.id);
+    res.json({ updated: result.changes });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.delete('/api/ventes/:id', authenticateToken, (req, res) => {
-  db.run('DELETE FROM ventes WHERE id = ? AND user_id = ?', [req.params.id, req.user.id], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ deleted: this.changes });
-  });
+  try {
+    const result = db.prepare('DELETE FROM ventes WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
+    res.json({ deleted: result.changes });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Routes Dépenses
 app.get('/api/depenses', authenticateToken, (req, res) => {
-  db.all('SELECT * FROM depenses WHERE user_id = ?', [req.user.id], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+  try {
+    const rows = db.prepare('SELECT * FROM depenses WHERE user_id = ?').all(req.user.id);
     res.json(rows);
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/depenses', authenticateToken, (req, res) => {
   const { description, montant } = req.body;
-  db.run('INSERT INTO depenses (user_id, description, montant, date_depense) VALUES (?, ?, ?, ?)',
-    [req.user.id, description, montant, new Date().toISOString()], function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ id: this.lastID });
-    });
+  try {
+    const result = db.prepare('INSERT INTO depenses (user_id, description, montant, date_depense) VALUES (?, ?, ?, ?)').run(req.user.id, description, montant, new Date().toISOString());
+    res.json({ id: result.lastInsertRowid });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.put('/api/depenses/:id', authenticateToken, (req, res) => {
   const { description, montant } = req.body;
-  db.run('UPDATE depenses SET description = ?, montant = ? WHERE id = ? AND user_id = ?',
-    [description, montant, req.params.id, req.user.id], function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ updated: this.changes });
-    });
+  try {
+    const result = db.prepare('UPDATE depenses SET description = ?, montant = ? WHERE id = ? AND user_id = ?').run(description, montant, req.params.id, req.user.id);
+    res.json({ updated: result.changes });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.delete('/api/depenses/:id', authenticateToken, (req, res) => {
-  db.run('DELETE FROM depenses WHERE id = ? AND user_id = ?', [req.params.id, req.user.id], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ deleted: this.changes });
-  });
+  try {
+    const result = db.prepare('DELETE FROM depenses WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
+    res.json({ deleted: result.changes });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Routes Clients
 app.get('/api/clients', authenticateToken, (req, res) => {
-  db.all('SELECT * FROM clients WHERE user_id = ?', [req.user.id], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+  try {
+    const rows = db.prepare('SELECT * FROM clients WHERE user_id = ?').all(req.user.id);
     res.json(rows);
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/clients', authenticateToken, (req, res) => {
   const { nom, contact, adresse } = req.body;
-  db.run('INSERT INTO clients (user_id, nom, contact, adresse, date_ajout) VALUES (?, ?, ?, ?, ?)',
-    [req.user.id, nom, contact, adresse, new Date().toISOString()], function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ id: this.lastID });
-    });
+  try {
+    const result = db.prepare('INSERT INTO clients (user_id, nom, contact, adresse, date_ajout) VALUES (?, ?, ?, ?, ?)').run(req.user.id, nom, contact, adresse, new Date().toISOString());
+    res.json({ id: result.lastInsertRowid });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.put('/api/clients/:id', authenticateToken, (req, res) => {
   const { nom, contact, adresse } = req.body;
-  db.run('UPDATE clients SET nom = ?, contact = ?, adresse = ? WHERE id = ? AND user_id = ?',
-    [nom, contact, adresse, req.params.id, req.user.id], function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ updated: this.changes });
-    });
+  try {
+    const result = db.prepare('UPDATE clients SET nom = ?, contact = ?, adresse = ? WHERE id = ? AND user_id = ?').run(nom, contact, adresse, req.params.id, req.user.id);
+    res.json({ updated: result.changes });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.delete('/api/clients/:id', authenticateToken, (req, res) => {
-  db.run('DELETE FROM clients WHERE id = ? AND user_id = ?', [req.params.id, req.user.id], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ deleted: this.changes });
-  });
+  try {
+    const result = db.prepare('DELETE FROM clients WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
+    res.json({ deleted: result.changes });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Servir l'app HTML statique
