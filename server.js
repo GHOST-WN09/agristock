@@ -1,7 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const sqlite3 = require('sqlite3').verbose();
+const Database = require('better-sqlite3');
+const db = new Database('./agristock.db');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 require('dotenv').config();
@@ -30,10 +31,12 @@ if (NODE_ENV === 'development') {
 }
 
 // Connexion DB
-const db = new sqlite3.Database('./agristock.db', (err) => {
-  if (err) console.error(err.message);
-  else console.log('Connected to SQLite database.');
-});
+try {
+  console.log('Connected to SQLite database.');
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
+}
 
 // Création tables
 db.serialize(() => {
